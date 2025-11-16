@@ -1,87 +1,104 @@
-
-import google.generativeai as genai
+import os
 import json
-import os
+import re
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from dotenv import load_dotenv
+from tqdm import tqdm
+import google.generativeai as genai
 
-# -------------------------
-# 1. CONFIGURE GEMINI
-# -------------------------
-load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    raise RuntimeError("GEMINI_API_KEY not found in .env file. Please create a .env file with GEMINI_API_KEY=<your_key>.")
-
-genai.configure(api_key=api_key)
-
-model = genai.GenerativeModel("models/gemini-2.5-flash")
-
-# -------------------------
-# 2. READ PROMPT FROM MD FILE
-# -------------------------
-PROMPT_PATH = "prompt.md"
-
-with open(PROMPT_PATH, "r", encoding="utf-8") as f:
-    base_prompt = f.read()
-
-import os
-
-# -------------------------
-# 3. PDF INPUTS
-# -------------------------
-input_dir = "input"
-output_dir = "output"
-os.makedirs(output_dir, exist_ok=True)
-
-# List all PDF files in input folder
-pdf_paths = [os.path.join(input_dir, fname) for fname in os.listdir(input_dir) if fname.lower().endswith('.pdf')]
-
-# Upload PDFs
-uploaded_files = [genai.upload_file(path) for path in pdf_paths]
-
-# -------------------------
-# 4. RUN EXTRACTION
-# -------------------------
-results = {}
+LEADING_NUM_RE = re.compile(r"^\s*(\d+)\s*\.")
 
 
-# Process each PDF and save output as <pdfname>.json
-for path, file in zip(pdf_paths, uploaded_files):
-    original_pdfname = os.path.basename(path)
-    json_filename = os.path.splitext(original_pdfname)[0] + ".json"
-    output_path = os.path.join(output_dir, json_filename)
-    print("Going to save as:", output_path)
-    print(f"Processing: {file.name}")
+def extract_id(name: str) -> int | None:
+    m = LEADING_NUM_RE.match(name)
+    return int(m.group(1)) if m else None
 
-    # Send MD prompt + PDF file as input sequence
-    response = model.generate_content(
-        [
-            base_prompt,   # full MD prompt
-            file           # PDF file content
+
+def strip_code_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[len("```json") :].strip()
+    if text.startswith("```"):
+        text = text[len("```") :].strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    return text
+
+
+def parse_json(raw: str, pdf_name: str) -> dict:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        cleaned = strip_code_fences(raw)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            tqdm.write(f"⚠️  invalid JSON for {pdf_name}, saving raw output")
+            return {"raw_output": raw}
+
+
+def process_pdf(
+    pdf_path: str,
+    prompt: str,
+    output_dir: Path,
+    model_name: str,
+) -> Path:
+    file_handle = genai.upload_file(pdf_path)
+    model = genai.GenerativeModel(model_name)
+    response = model.generate_content([prompt, file_handle])
+
+    pdf_name = Path(pdf_path).name
+    data = parse_json(response.text, pdf_name)
+    data["id"] = extract_id(pdf_name)
+
+    out_path = output_dir / f"{Path(pdf_name).stem}.json"
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    return out_path
+
+
+def run(
+    input_dir: str,
+    output_dir: str,
+    prompt_path: str,
+    model_name: str,
+    max_workers: int,
+) -> None:
+    load_dotenv()
+    genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+
+    prompt = Path(prompt_path).read_text(encoding="utf-8")
+    pdf_paths = [str(p) for p in Path(input_dir).glob("*.pdf")]
+
+    if not pdf_paths:
+        tqdm.write(f"No PDFs found in {input_dir}")
+        return
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [
+            pool.submit(process_pdf, p, prompt, Path(output_dir), model_name)
+            for p in pdf_paths
         ]
+        bar = tqdm(total=len(futures), desc="Processing PDFs", unit="pdf")
+        for f in as_completed(futures):
+            f.result()
+            bar.update()
+        bar.close()
+
+
+def main() -> None:
+    run(
+        input_dir="input",
+        output_dir="output",
+        prompt_path="prompts/prompt-pdf-reader-background.md",
+        model_name="models/gemini-2.5-pro",
+        max_workers=4,
     )
 
-    # Gemini returns text — must be JSON because your prompt enforces it
-    print("Saving now...")
-    try:
-        parsed_json = json.loads(response.text)
-    except json.JSONDecodeError:
-        # Fallback: strip code fences if present
-        print("⚠️ Model output was not valid JSON. Trying to strip code fences.")
-        text = response.text.strip()
-        if text.startswith('```json'):
-            text = text[len('```json'):].strip()
-        if text.startswith('```'):
-            text = text[len('```'):].strip()
-        if text.endswith('```'):
-            text = text[:-len('```')].strip()
-        try:
-            parsed_json = json.loads(text)
-        except json.JSONDecodeError:
-            print("⚠️ Still not valid JSON. Saving raw output.")
-            parsed_json = {"raw_output": response.text}
 
-    # Save output as <output_dir>/<original_pdfname>.json
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(parsed_json, f, indent=4, ensure_ascii=False)
-    print(f"✅ Saved structured output to {output_path}")
+if __name__ == "__main__":
+    main()

@@ -15,8 +15,9 @@ The final output **must be a single valid JSON object** with the following field
 
 ### **1. Paper Identification**
 - **Title:** Extract the full title of the paper exactly as written.  
-- **Citation Format:** Extract the first author’s last name followed by *et al.* (e.g., *Smith et al.*).  
+- **Authors:** Extract the full list of authors, not need to add email or affiliation. 
 - **Year of Publication:** Extract the publication year, if explicitly stated.
+- **Citation Text:** Provide a bib-style citation code that can be added to a `.bib` codes.
 
 ---
 
@@ -70,15 +71,17 @@ Describe the technical approach for classification:
 
 ## ⚙️ Output Format
 
-Return the answer strictly as a valid JSON object that could be pared with standard tools (not Markdown, not a list, not explanations), containing the following keys only:
+Return the answer strictly as a valid JSON object that could be pared with standard tools (not Markdown, not a list, not explanations), containing the following keys only. 
+**It is mandatory to include all keys with the expected format**:
 
 - `"title"`  
 - `"authors"`  
-- `"year_of_publication"`  
+- `"year_of_publication"`
+- `"citation_text"`
 - `"summary_text"`  
 - `"dataset_text"`  
 - `"taxonomy_text"`  
-- `"method_text"`  
+- `"method_text"`
 
 ---
 
