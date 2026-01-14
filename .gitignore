@@ -1,5 +1,7 @@
 .env
 venv/
-input*
-output*
+input/
+output/
+files/
 .idea/
+notes.txt
